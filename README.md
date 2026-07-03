@@ -8,8 +8,23 @@ Kissan Cart is a farmer-first e-commerce experience where growers can list fresh
 - A farmer story section that highlights the land and farming journey
 - A simple seller form to create a harvest listing
 
-## Run locally
-1. Open the project folder
-2. Start the preview server with:
-   npm start
-3. Visit: http://127.0.0.1:3000
+## Run locally (Full stack)
+1. Create MySQL database:
+   - database name: `kissan_cart`
+2. Configure backend env:
+   - Copy `server/.env.example` to `server/.env`
+   - Update `DB_HOST, DB_USER, DB_PASSWORD, DB_NAME`
+3. Install backend dependencies:
+   - `cd server && npm install`
+4. Start backend:
+   - `cd server && npm run dev`
+5. Visit:
+   - http://127.0.0.1:3000
+
+## API (used by the dashboard)
+- POST   `/api/auth/register`
+- POST   `/api/auth/login`
+- GET    `/api/listings`
+- GET    `/api/listings/me`
+- POST   `/api/listings`
+

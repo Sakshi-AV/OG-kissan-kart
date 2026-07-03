@@ -437,10 +437,12 @@ const translations = {
 };
 
 const STORAGE_KEYS = {
-  user: "kissan-cart-user",
-  listings: "kissan-cart-listings",
+  token: "kissan-cart-token",
   language: "kissan-cart-language"
 };
+
+// Same-origin API base (backend serves frontend + /api/*)
+const API_BASE = "";
 
 const filterContainer = document.querySelector("#filters");
 const productsGrid = document.querySelector("#products-grid");
@@ -458,6 +460,7 @@ const listingsList = document.querySelector("#listings-list");
 let currentUser = null;
 let listings = [];
 let currentLanguage = localStorage.getItem(STORAGE_KEYS.language) || "en";
+
 
 function getCategoryLabel(category, lang) {
   return translations[lang].categories[category] || category;
@@ -545,34 +548,39 @@ function applyTranslations() {
   });
 }
 
-function getStoredListings() {
-  const stored = localStorage.getItem(STORAGE_KEYS.listings);
-  if (stored) {
-    return JSON.parse(stored);
+function getStoredToken() {
+  return localStorage.getItem(STORAGE_KEYS.token) || null;
+}
+
+function setStoredToken(token) {
+  if (!token) localStorage.removeItem(STORAGE_KEYS.token);
+  else localStorage.setItem(STORAGE_KEYS.token, token);
+}
+
+function getAuthHeaders() {
+  const token = getStoredToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function apiFetch(pathname, options = {}) {
+  const res = await fetch(`${API_BASE}${pathname}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+    ...options,
+  });
+
+  if (!res.ok) {
+    let message = `HTTP ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body && body.error) message = body.error;
+    } catch (_) {}
+    throw new Error(message);
   }
 
-  const starterListings = [
-    {
-      id: 1,
-      farmer: "Sujata",
-      crop: "Organic Tomatoes",
-      quantity: "180 kg",
-      location: "Bengaluru outskirts",
-      price: "₹70 per kg"
-    }
-  ];
-
-  localStorage.setItem(STORAGE_KEYS.listings, JSON.stringify(starterListings));
-  return starterListings;
-}
-
-function saveListings() {
-  localStorage.setItem(STORAGE_KEYS.listings, JSON.stringify(listings));
-}
-
-function getCurrentUser() {
-  const storedUser = localStorage.getItem(STORAGE_KEYS.user);
-  return storedUser ? JSON.parse(storedUser) : null;
+  return res.json();
 }
 
 function renderListings() {
@@ -594,11 +602,12 @@ function renderListings() {
     .join("");
 }
 
-function renderDashboard() {
-  currentUser = getCurrentUser();
-  listings = getStoredListings();
+async function renderDashboard() {
+  const token = getStoredToken();
 
-  if (!currentUser) {
+  if (!token) {
+    currentUser = null;
+    listings = [];
     if (loginPanel) loginPanel.hidden = false;
     if (dashboardPanel) dashboardPanel.hidden = true;
     if (dashboardPreview) {
@@ -608,8 +617,31 @@ function renderDashboard() {
     return;
   }
 
+  // decode name/email for greeting (no verification here; token already verified server-side)
+  try {
+    const [, payloadB64] = token.split('.');
+    const payloadJson = atob(payloadB64.replace(/-/g, '+').replace(/_/g, '/'));
+    const payload = JSON.parse(decodeURIComponent(payloadJson.split('').map(c => `%${c.charCodeAt(0).toString(16).padStart(2,'0')}`).join('')));
+    currentUser = { name: payload.name || payload.email || 'Farmer' };
+  } catch (_) {
+    currentUser = { name: 'Farmer' };
+  }
+
   if (loginPanel) loginPanel.hidden = true;
   if (dashboardPanel) dashboardPanel.hidden = false;
+
+  try {
+    const data = await apiFetch('/api/listings/me', { headers: getAuthHeaders() });
+    listings = Array.isArray(data.listings) ? data.listings : [];
+  } catch (e) {
+    // token invalid/expired
+    setStoredToken(null);
+    if (loginPanel) loginPanel.hidden = false;
+    if (dashboardPanel) dashboardPanel.hidden = true;
+    if (dashboardPreview) dashboardPreview.innerHTML = `<p class="empty-state">${translations[currentLanguage].previewEmpty}</p>`;
+    return;
+  }
+
   if (welcomeTitle) welcomeTitle.textContent = `${translations[currentLanguage].welcomeTitle}, ${currentUser.name}`;
   if (dashboardHeading) dashboardHeading.textContent = `${listings.length} ${listings.length === 1 ? translations[currentLanguage].listingCountOne : translations[currentLanguage].listingCountMany}`;
 
@@ -628,58 +660,85 @@ function renderDashboard() {
   renderListings();
 }
 
-function handleLoginSubmit(event) {
+async function handleLoginSubmit(event) {
   event.preventDefault();
+
   const data = new FormData(loginForm);
   const email = (data.get("email") || "").toString().trim();
   const password = (data.get("password") || "").toString().trim();
 
-  if (!email || !password) {
-    return;
+  if (!email || !password) return;
+
+  try {
+    const resp = await apiFetch('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password })
+    });
+
+    setStoredToken(resp.token);
+    if (loginForm) loginForm.reset();
+    await renderDashboard();
+  } catch (e) {
+    // If user doesn't exist, register automatically for demo flow
+    try {
+      const name = email.includes("@") ? email.split("@")[0].replace(/[._-]/g, " ") : email;
+      const nameClean = name.replace(/\b\w/g, (char) => char.toUpperCase());
+
+      const resp = await apiFetch('/api/auth/register', {
+        method: 'POST',
+        body: JSON.stringify({ email, password, name: nameClean })
+      });
+
+      const loginResp = await apiFetch('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email, password })
+      });
+
+      setStoredToken(loginResp.token);
+      if (loginForm) loginForm.reset();
+      await renderDashboard();
+    } catch (e2) {
+      alert(e2.message || 'Login failed');
+    }
   }
-
-  const name = email.includes("@")
-    ? email.split("@")[0].replace(/[._-]/g, " ")
-    : email;
-
-  currentUser = {
-    name: name.replace(/\b\w/g, (char) => char.toUpperCase()),
-    email
-  };
-
-  localStorage.setItem(STORAGE_KEYS.user, JSON.stringify(currentUser));
-  listings = getStoredListings();
-  renderDashboard();
-  if (loginForm) loginForm.reset();
 }
 
-function handleListingSubmit(event) {
+async function handleListingSubmit(event) {
   event.preventDefault();
-  if (!currentUser) return;
+  const token = getStoredToken();
+  if (!token) return;
 
   const data = new FormData(listingForm);
-  const newListing = {
-    id: Date.now(),
-    farmer: currentUser.name,
+  const payload = {
     crop: (data.get("cropName") || "Fresh harvest").toString().trim(),
     quantity: (data.get("quantity") || "Available stock").toString().trim(),
     location: (data.get("location") || "Local pickup").toString().trim(),
     price: (data.get("price") || "Ask buyers").toString().trim()
   };
 
-  listings.unshift(newListing);
-  saveListings();
-  renderDashboard();
-  if (listingForm) listingForm.reset();
+  try {
+    await apiFetch('/api/listings', {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify(payload)
+    });
+
+    if (listingForm) listingForm.reset();
+    await renderDashboard();
+  } catch (e) {
+    alert(e.message || 'Failed to publish listing');
+  }
 }
 
 function handleLogout() {
-  localStorage.removeItem(STORAGE_KEYS.user);
+  setStoredToken(null);
   currentUser = null;
+  listings = [];
   if (loginForm) loginForm.reset();
   if (listingForm) listingForm.reset();
   renderDashboard();
 }
+
 
 function setLanguage(lang) {
   currentLanguage = lang;
