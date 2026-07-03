@@ -53,8 +53,9 @@ let pool;
 async function start() {
   pool = await createPool(process.env);
 
-  // Ensure we can reach DB
+  // Ensure we can reach DB (or fallback)
   await pool.query('SELECT 1');
+
 
   // -------- Auth --------
   app.post('/api/auth/register', async (req, res) => {
